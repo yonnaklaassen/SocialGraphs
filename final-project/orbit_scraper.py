@@ -79,6 +79,8 @@ class DTUOrbitScraper:
             profile_info["ORCID"] = "Not found"
         return profile_info
 
-scraper = DTUOrbitScraper()
-profile_info = scraper.get_profile_info("Nicki Skafte")
-print(profile_info)
+
+if __name__ == "__main__":
+    scraper = DTUOrbitScraper()
+    profile_info = scraper.get_profile_info("Sune Lehmann")
+    print(profile_info)
