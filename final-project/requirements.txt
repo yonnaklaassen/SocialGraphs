@@ -1,0 +1,9 @@
+sparqlwrapper
+beautifulsoup4
+tqdm
+networkx
+pandas
+numpy
+matplotlib
+scipy
+git+https://github.com/WDscholia/scholia

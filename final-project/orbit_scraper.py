@@ -1,12 +1,14 @@
 import requests
 from bs4 import BeautifulSoup
 
-from scholia import query
+from scholia import query as scholia_query
+from SPARQLWrapper import SPARQLWrapper, JSON
 
 class DTUOrbitScraper:
     def __init__(self):
         self.base_url = "https://orbit.dtu.dk/en/persons/"
-        
+        self.endpoint_url = "https://query.wikidata.org/sparql"
+
     def search_person(self, name):
         """Search for the person and get the URL to their profile."""
         search_url = f"{self.base_url}?search={name.replace(' ', '+')}&isCopyPasteSearch=false"
@@ -24,10 +26,53 @@ class DTUOrbitScraper:
         else:
             raise Exception("Profile link not found")
 
+    def get_topic_info(self, topic_url):
+        """Scrape the description for a topic from its Wikidata page."""
+        response = requests.get(topic_url)
+        if response.status_code != 200:
+            return "Description not found"
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        description = soup.find("div", class_="wikibase-entitytermsview-heading-description")
+        return description.text.strip() if description else "Description not found"
+
+    def get_scholia_topics(self, qs):
+        """Get topics and scores from Scholia using SPARQL."""
+        query = f"""PREFIX target: <http://www.wikidata.org/entity/{qs}>
+        SELECT ?score ?topic ?topicLabel
+        WITH {{
+            SELECT (SUM(?score_) AS ?score) ?topic WHERE {{
+                {{ target: wdt:P101 ?topic . BIND(20 AS ?score_) }}
+                UNION {{ SELECT (3 AS ?score_) ?topic WHERE {{ ?work wdt:P50 target: ; wdt:P921 ?topic . }} }}
+                UNION {{ SELECT (1 AS ?score_) ?topic WHERE {{ ?work wdt:P50 target: . ?citing_work wdt:P2860 ?work . ?citing_work wdt:P921 ?topic . }} }}
+            }} GROUP BY ?topic
+        }} AS %results 
+        WHERE {{
+            INCLUDE %results
+            SERVICE wikibase:label {{ bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }}
+        }}
+        ORDER BY DESC(?score)
+        LIMIT 200"""
+        
+        sparql = SPARQLWrapper(self.endpoint_url)
+        sparql.setQuery(query)
+        sparql.setReturnFormat(JSON)
+        results = sparql.query().convert()
+        
+        topics = [] 
+
+        for result in results["results"]["bindings"]:
+            topic_url = result["topic"]["value"]
+            topic_label = result["topicLabel"]["value"]
+            score = int(result["score"]["value"])
+            #info = self.get_topic_info(topic_url)
+            #topics[topic_label] = {"score": score, "info": info}
+            topics.append({"topic":topic_label, "score": score, "topic_url": topic_url})
+        return topics
+
     def get_profile_info(self, name):
         """Retrieve profile information given a person's name."""
         full_profile_url = self.search_person(name)
-        print(full_profile_url)
         response = requests.get(full_profile_url)
         
         if response.status_code != 200:
@@ -39,7 +84,6 @@ class DTUOrbitScraper:
         profile_info = {}
         
         # Get Profile Description
-        # Find the <h3> with "Profile" text and then find the next <p> tag that contains the profile information
         profile_header = soup.find("h3", string="Profile")
         profile_section = profile_header.find_next("p") if profile_header else None
         profile_info["Profile_desc"] = profile_section.get_text(strip=True) if profile_section else "None"
@@ -68,17 +112,25 @@ class DTUOrbitScraper:
                 })
         profile_info["Fingerprint"] = fingerprints
 
-        # Get ORCID
+        # Extract ORCID
         orcid_section = soup.find("div", class_="rendering_person_personorcidrendererportal")
         if orcid_section:
             orcid_link = orcid_section.find("a", href=True)
             profile_info["ORCID"] = orcid_link["href"] if orcid_link else "Not found"
-
-            profile_info["QS"] = query.orcid_to_qs(orcid_link["href"].split("/")[-1]) if orcid_link else "Not found"
+            if orcid_link:
+                orcid_id = orcid_link["href"].split("/")[-1]
+                profile_info["QS"] = scholia_query.orcid_to_qs(orcid_id)
+                # Retrieve Scholia topics if QS exists
+                if len(profile_info["QS"]) == 1:
+                    profile_info["scholia_topics"] = self.get_scholia_topics(profile_info["QS"][0])
+                else:
+                    profile_info["scholia_topics"] = {}
         else:
             profile_info["ORCID"] = "Not found"
-        return profile_info
+            profile_info["QS"] = "Not found"
+            profile_info["scholia_topics"] = {}
 
+        return profile_info
 
 if __name__ == "__main__":
     scraper = DTUOrbitScraper()
